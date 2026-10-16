@@ -8,5 +8,9 @@ data={fileName:'测试.xlsx',validation:{totalRows:2,validRows:1,invalidRows:1,i
 render();assert.equal($('body').children.length,1);assert.equal($('body').children[0].children[0].textContent,'9');assert.ok($('body').children[0].children.at(-1).children[0].textContent.includes('D9'));
 group='valid';render();assert.equal($('body').children[0].children[0].textContent,'5');assert.equal($('body').children[0].children.length,5);
 data.sheets[0].validRows=Array.from({length:105},(_,i)=>({rowNumber:100+i*2,cells:['甲'],issues:[]}));page=1;render();assert.equal($('body').children.length,5);assert.equal($('body').children[0].children[0].textContent,'300');
-console.log('UI grouping, original coordinates, error reasons and pagination verified');
+data.canConfirm=false;render();assert.equal($('confirmImport').disabled,true);
+data.canConfirm=true;data.expiresAt='2026-10-16T03:00:00Z';render();assert.equal($('confirmImport').disabled,false);
+confirming=true;render();assert.equal($('confirmImport').disabled,true);confirming=false;
+receipt={batchId:'test',importedRows:2,alreadyImported:false};render();assert.equal($('confirmImport').disabled,true);assert.equal($('importState').textContent,'导入成功');
+console.log('UI grouping, original coordinates, pagination and confirmation states verified');
 `,{document,assert,console,AbortController,setTimeout,clearTimeout});

@@ -15,6 +15,9 @@ public final class SettlementValidator {
     private record Entry(String sheet, int row, int column) {}
 
     public static Result validate(Workbook book) {
+        return validate(book, Set.of(), false);
+    }
+    public static Result validate(Workbook book, Set<String> existingCodes, boolean databaseChecked) {
         var issues = new ArrayList<Issue>();
         var codes = new HashMap<String, List<Entry>>();
         int total = 0;
@@ -59,8 +62,10 @@ public final class SettlementValidator {
                         } catch (NumberFormatException e) { error = "必须是有效数字（不含货币符号或千分位文字）"; }
                     } else if (field.equals("合作开始日期") && !validDate(cell, value, book)) error = "必须是真实存在的日期；请使用 Excel 日期或 yyyy-MM-dd、yyyy/M/d、yyyy年M月d日";
                     if (error != null) issues.add(new Issue(sheet.getSheetName(), row.getRowNum()+1, col+1, field, error));
-                    if (field.equals("统一社会信用代码") && error == null)
+                    if (field.equals("统一社会信用代码") && error == null) {
                         codes.computeIfAbsent(value, key -> new ArrayList<>()).add(new Entry(sheet.getSheetName(), row.getRowNum()+1, col+1));
+                        if (existingCodes.contains(value)) issues.add(new Issue(sheet.getSheetName(), row.getRowNum()+1, col+1, field, "该供应商已在数据库中，不允许重复入库"));
+                    }
                 }
             }
             if (!hasData) issues.add(new Issue(sheet.getSheetName(), header.getRowNum()+1, 0, "数据", "只有表头，没有供应商数据"));
@@ -81,8 +86,8 @@ public final class SettlementValidator {
             Sheet sheet = book.getSheet(issue.sheet());
             for (Row row : sheet) if (row.getRowNum()+1 > issue.rowNumber() && nonempty(row, formatter)) badRows.add(issue.sheet()+"\u0000"+(row.getRowNum()+1));
         }
-        return new Result(total, total-badRows.size(), badRows.size(), issues, false, List.of(
-            "尚未连接供应商数据库：仅完成文件内查重，未校验数据库已有供应商；当前不能确认入库。",
+        return new Result(total, total-badRows.size(), badRows.size(), issues, databaseChecked, List.of(
+            databaseChecked ? "已完成数据库查重；确认入库时会再次检查，全部通过才整批写入。" : "尚未连接供应商数据库：仅完成文件内查重，未校验数据库已有供应商；当前不能确认入库。",
             "“结算金额必须合理”尚无业务阈值：当前检查有效数字及非负，不设置金额上限或小数位限制。"));
     }
     static String clean(String text) { return text == null ? "" : text.replace('\u00a0',' ').replace('\u3000',' ').strip(); }

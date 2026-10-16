@@ -1,4 +1,4 @@
-# 供应商结算导入校验（第二阶段）
+# 供应商结算导入校验（第三阶段）
 
 需要 Java 21。首次构建需联网下载 Maven 依赖。
 
@@ -32,9 +32,16 @@
 ## 边界与接口
 
 - 文件最大10 MB，总非空行数（含表头）最多10000行，每行最多200列。
-- 仅解析校验，不写入数据库。数据库已有供应商查重尚未接入，不能据字段校验通过确认入库。
+- 上传只预览校验，不写入供应商表；全部校验通过后点击“确认入库”，在确认框核对文件名和总条数后点击“确认写入数据库”。任一行有错误时禁止整批入库，不进行部分导入。
+- 已接入 H2 本地文件数据库，默认路径为启动目录下 `data/settlement.mv.db`（在项目目录启动即为 `D:\Downloads\xp\xp\data\settlement.mv.db`），重启后保留已导入供应商和批次记录。可通过 `settlement.database-url` 配置 H2 URL。
+- 数据库信用代码为主键；预览和确认都执行数据库查重。确认使用数据库锁串行查重写入，并在同一事务提交供应商与批次，任意插入失败整批回滚。
+- 确认仅接收批次 token，使用服务器保存的已校验数据，不接收浏览器回传的供应商字段。待确认批次绑定当前浏览器会话，有效期30分钟，同一会话新上传替换旧预览；服务器重启后未确认的预览需重新上传。
+- 同一批次重复确认返回原成功结果，不重复写入。网络中断后应重试当前批次确认；成功后页面显示导入条数和批次编号。
+- 金额使用 BigDecimal 读取原始数字，并以精确十进制字符串存于 amount CLOB，避免未约定小数位时强制舍入；日期使用数据库 DATE。后续如需SQL金额汇总，可在业务明确精度后迁移为定点数列。
+- 当前没有账号登录，批次归属按浏览器会话隔离。
 - “金额合理”尚无业务阈值，暂不限制金额上限或小数位数。
-- `POST /api/preview`，multipart字段 `file`：返回预览、每张表的 validRows / invalidRows / headerIssues，以及校验汇总。
-- `POST /api/errors/word`，multipart字段 `file`：服务器重新解析校验原文件，返回Word附件；没有错误时返回可读提示。上传数据在内存内处理，不持久保存。
+- `POST /api/preview`，multipart字段 `file`：返回预览、每张表的 validRows / invalidRows / headerIssues，以及校验汇总、token、canConfirm、expiresAt。
+- `POST /api/imports/confirm`，JSON `{ "token": "预览返回的token" }`：确认整批入库，返回 batchId、importedRows、alreadyImported；需携带上传时同一会话 Cookie。冲突返回409，并在供应商已被其他批次导入时返回更新的错误预览。
+- `POST /api/errors/word`，multipart字段 `file`：服务器重新解析并执行字段、文件内和数据库查重后校验原文件，返回Word附件；没有错误时返回可读提示。上传数据在内存内处理，不持久保存。
 
 测试：`.\mvnw.cmd test`

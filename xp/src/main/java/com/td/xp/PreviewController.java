@@ -17,8 +17,23 @@ public class PreviewController {
                             List<SettlementValidator.Issue> headerIssues) {}
     public record RowData(int rowNumber, List<String> cells, List<SettlementValidator.Issue> issues) {}
 
+    private ImportService imports;
+    public PreviewController() {}
+    @org.springframework.beans.factory.annotation.Autowired
+    public PreviewController(ImportService imports) { this.imports = imports; }
+
     @PostMapping("/api/preview")
-    public Preview preview(@RequestParam("file") MultipartFile file) {
+    public ImportService.UploadResult upload(@RequestParam("file") MultipartFile file, jakarta.servlet.http.HttpSession session) throws java.io.IOException {
+        return imports.prepare(file, session);
+    }
+    @PostMapping("/api/imports/confirm")
+    public ImportService.Receipt confirm(@RequestBody ConfirmRequest request, jakarta.servlet.http.HttpSession session) {
+        if (request.token() == null || request.token().isBlank()) throw new IllegalArgumentException("缺少待确认批次，请先上传预览。");
+        return imports.confirm(request.token(), session);
+    }
+    public record ConfirmRequest(String token) {}
+    public Preview preview(MultipartFile file) { return parse(file, Set.of(), false); }
+    Preview parse(MultipartFile file, Set<String> existingCodes, boolean databaseChecked) {
         String name = Optional.ofNullable(file.getOriginalFilename()).orElse("");
         if (!name.toLowerCase(Locale.ROOT).endsWith(".xlsx"))
             throw new PreviewException("仅支持 .xlsx 文件，请在 Excel 中另存为 .xlsx 后上传。");
@@ -52,7 +67,7 @@ public class PreviewController {
                 sheets.add(new SheetData(sheet.getSheetName(), columns, rows, List.of(), List.of(), List.of()));
             }
             if (totalRows == 0) throw new PreviewException("文件没有可预览的数据，请检查可见工作表是否为空。");
-            var validation = SettlementValidator.validate(workbook);
+            var validation = SettlementValidator.validate(workbook, existingCodes, databaseChecked);
             var grouped = new ArrayList<SheetData>();
             for (var sheet : sheets) {
                 int header = sheet.rows().isEmpty() ? 0 : sheet.rows().getFirst().rowNumber();
@@ -83,7 +98,7 @@ public class PreviewController {
 
     @PostMapping("/api/errors/word")
     public ResponseEntity<byte[]> exportErrors(@RequestParam("file") MultipartFile file) throws java.io.IOException {
-        var result = preview(file);
+        var result = imports == null ? preview(file) : parse(file, imports.existingCodes(), true);
         if (result.validation().issues().isEmpty()) throw new PreviewException("当前文件没有校验错误，无需导出错误报告。");
         return ResponseEntity.ok()
             .header("Content-Disposition", org.springframework.http.ContentDisposition.attachment()
@@ -94,6 +109,12 @@ public class PreviewController {
 
     @RestControllerAdvice
     public static class Errors {
+        @ExceptionHandler(ImportService.Conflict.class)
+        public ResponseEntity<Map<String, Object>> conflict(ImportService.Conflict e) {
+            var body = new HashMap<String, Object>(); body.put("message", e.getMessage());
+            if (e.preview != null) body.put("preview", e.preview);
+            return ResponseEntity.status(409).body(body);
+        }
         @ExceptionHandler(IllegalArgumentException.class)
         public ResponseEntity<Map<String, String>> invalid(IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
@@ -104,7 +125,7 @@ public class PreviewController {
         }
         @ExceptionHandler(Exception.class)
         public ResponseEntity<Map<String, String>> unexpected(Exception e) {
-            return ResponseEntity.status(500).body(Map.of("message", "解析暂时失败，请重新上传；若仍然失败，请联系管理员检查服务。"));
+            return ResponseEntity.status(500).body(Map.of("message", "操作暂时失败，未完成的数据会回滚；确认结果不明时可重试确认，系统会防止重复入库。若持续失败请联系管理员。"));
         }
     }
 }
