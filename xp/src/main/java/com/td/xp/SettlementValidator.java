@@ -110,4 +110,3 @@ public final class SettlementValidator {
         return false;
     }
 }
-
