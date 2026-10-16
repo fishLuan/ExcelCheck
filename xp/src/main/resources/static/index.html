@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>供应商结算 · 文件预览</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f7fa;color:#172a3b;font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif}header{background:white;border-bottom:1px solid #e4e9ef;padding:19px 5%;display:flex;align-items:center;gap:12px}.logo{background:#176b5b;color:white;padding:5px 10px;border-radius:8px;font-weight:700}header span{color:#758391;margin-left:auto}main{max-width:1280px;margin:38px auto;padding:0 24px}h1{font-size:28px;margin:0 0 8px}p{color:#6c7d8b;margin:0 0 24px}.steps{display:flex;gap:28px;margin:28px 0;color:#8c98a4}.steps strong{color:#176b5b}.card{background:#fff;border:1px solid #e0e6ed;border-radius:12px;padding:28px;margin-bottom:24px}h2{font-size:17px;margin:0 0 18px}.drop{border:1px dashed #a8bfb9;border-radius:9px;background:#f7fbf9;text-align:center;padding:30px}.drop.over{background:#e4f4ee}.icon{font-size:30px;color:#176b5b}button,.pick{display:inline-block;border:0;border-radius:6px;padding:10px 20px;background:#176b5b;color:#fff;font:inherit;cursor:pointer}button:disabled{opacity:.45;cursor:default}.hint{font-size:12px;color:#7a8995;margin:12px 0 0}input{max-width:100%;margin:14px 0}.error{background:#fff1ee;border:1px solid #f3c4ba;color:#a53822;padding:14px 18px;border-radius:8px;margin-bottom:20px;white-space:pre-wrap}.status{color:#176b5b;margin:12px 0}.toolbar,.pager{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.toolbar{margin-bottom:16px}.toolbar h2{margin:0 auto 0 0}.toolbar select{padding:8px;border:1px solid #dbe3e9;border-radius:5px;max-width:280px}.table-wrap{overflow:auto;max-height:560px;border:1px solid #e2e8ee;border-radius:6px}table{border-collapse:separate;border-spacing:0;width:100%;white-space:nowrap}td,th{padding:11px 16px;text-align:left;border-bottom:1px solid #e8edf2;border-right:1px solid #eef1f4;max-width:440px;overflow:hidden;text-overflow:ellipsis}thead th{position:sticky;top:0;background:#edf3f5;z-index:1;font-size:12px;color:#627585}tbody th{background:#f7f9fb;color:#82919d;font-weight:400}tbody tr:hover td{background:#f5faf8}.pager{justify-content:flex-end;margin-top:16px}.pager span{margin-right:auto;color:#6c7d8b}.pager button{padding:6px 14px;background:#edf3f1;color:#176b5b}[hidden]{display:none!important}@media(max-width:600px){main{padding:0 14px;margin-top:24px}.card{padding:18px}.steps{gap:12px;font-size:12px}header span{display:none}}
+.bad{background:#fff1ee!important;color:#a53822}.validation{padding:16px;background:#f1f7f4;border-radius:8px;margin-bottom:20px}.validation p{margin:6px 0}.problems{white-space:normal;min-width:300px;max-width:600px}label.filter{display:flex;align-items:center;gap:6px}button[aria-pressed="false"]{background:#e8edf1;color:#344b60}#export{background:#344b60}.problems{max-width:none;overflow:visible;text-overflow:clip}td.bad{outline:1px solid #edc2b9}</style>
+</head>
+<body>
+<header><div class="logo">结</div><b>供应商结算工作台</b><span>结算数据导入</span></header>
+<main><h1>上传结算名单</h1><p>先查看 Excel 解析结果，核对每一列数据。</p>
+<div class="steps"><strong>① 上传与预览</strong><span>② 数据校验</span><span>③ 确认入库（后续阶段）</span></div>
+<div id="error" class="error" role="alert" hidden></div>
+<section class="card"><h2>01 / 选择文件</h2><div class="drop" id="drop"><div class="icon" aria-hidden="true">↑</div><b>选择或拖拽 Excel 文件到这里</b><div><input id="file" type="file" accept=".xlsx" aria-label="选择 Excel 文件"></div><button id="upload" disabled>上传并校验</button><p class="hint">仅支持 .xlsx · 最大 10 MB · 最多 10,000 个有效行、200 列</p></div><div class="status" id="status" role="status" aria-live="polite"></div></section>
+<section class="card" id="preview" hidden><div class="toolbar"><h2>02 / 数据预览</h2><label for="sheet">工作表</label><select id="sheet"></select></div><div class="validation" role="status"><b id="summary"></b><div id="notices"></div></div><div class="toolbar"><button id="export">导出全部错误（Word）</button><button id="correct">修正后重新上传</button></div><p>下载错误报告，在原 Excel 中修正并保存后重新上传，系统将重新校验全部数据。</p><div class="toolbar" role="group" aria-label="校验结果分组"><button id="invalidTab" aria-pressed="true">待修正</button><button id="validTab" aria-pressed="false">校验通过</button></div><div id="schema" class="error" hidden></div><p id="meta"></p><div class="table-wrap"><table><thead id="head"></thead><tbody id="body"></tbody></table></div><div class="pager"><span id="count"></span><button id="prev">上一页</button><b id="page"></b><button id="next">下一页</button></div><p class="hint">行号对应 Excel 原始行号；空行已跳过，每张表首个非空行为表头，按字段名称识别列。必填字段中的公式需转成实际值后重新上传。本阶段仅预览，不会入库。</p></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let selected=null,data=null,page=0,group='invalid',exporting=false;const size=100;
+function fail(message){$('error').textContent=message;$('error').hidden=false;}
+function choose(file){selected=null;data=null;$('preview').hidden=true;$('error').hidden=true;$('status').textContent='';$('upload').disabled=true;if(!file)return;if(!/\.xlsx$/i.test(file.name)){fail('仅支持 .xlsx 文件，请选择 Excel 工作簿；其他文件请先另存为 .xlsx。');return;}if(file.size===0){fail('文件为空，请重新选择文件。');return;}if(file.size>10*1024*1024){fail('文件超过 10 MB，请精简文件后重新上传。');return;}selected=file;$('status').textContent='已选择：'+file.name;$('upload').disabled=false;}
+$('file').addEventListener('change',e=>choose(e.target.files[0]));
+for(const name of ['dragenter','dragover'])$('drop').addEventListener(name,e=>{e.preventDefault();$('drop').classList.add('over');});
+$('drop').addEventListener('dragleave',()=>$('drop').classList.remove('over'));
+$('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('over');if(!$('file').disabled){$('file').value='';choose(e.dataTransfer.files[0]);}});
+$('upload').addEventListener('click',async()=>{if(!selected)return;$('error').hidden=true;$('preview').hidden=true;$('upload').disabled=true;$('file').disabled=true;$('status').textContent='正在上传并解析，请稍候…';const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),60000);try{const form=new FormData();form.append('file',selected);const response=await fetch('/api/preview',{method:'POST',body:form,signal:controller.signal});let result;try{result=await response.json();}catch{throw new Error('服务未返回有效的解析结果，请稍后重试。');}if(!response.ok)throw new Error(result.message||'文件解析失败，请检查文件后重试。');data=result;page=0;group=result.validation.issues.length?'invalid':'valid';$('sheet').replaceChildren();data.sheets.forEach((s,i)=>{const option=document.createElement('option');option.value=i;option.textContent=s.name+'（待修正 '+s.invalidRows.length+' / 通过 '+s.validRows.length+'）';$('sheet').append(option);});$('sheet').value=Math.max(0,data.sheets.findIndex(s=>s.rows.length));render();$('preview').hidden=false;$('status').textContent='校验完成，请分别查看待修正和校验通过的数据。';}catch(e){$('status').textContent='';fail(e.name==='AbortError'?'解析超时，请稍后重新上传。':e instanceof TypeError?'无法连接服务器，请检查网络或服务状态后重试。':e.message);}finally{clearTimeout(timeout);$('upload').disabled=false;$('file').disabled=false;}});
+function column(index){let s='';for(index++;index;index=Math.floor((index-1)/26))s=String.fromCharCode(65+(index-1)%26)+s;return s;}
+function cell(tag,text){const el=document.createElement(tag);el.textContent=text;el.title=text;return el;}
+function render(){
+const s=data.sheets[Number($('sheet').value)],v=data.validation;
+$('summary').textContent='共 '+v.totalRows+' 条数据，'+v.validRows+' 条通过字段与文件内查重，'+v.invalidRows+' 条待修正。';
+$('notices').replaceChildren(...v.notices.map(t=>cell('p',t)));
+$('export').disabled=exporting||!v.issues.length;
+$('invalidTab').textContent='待修正（'+s.invalidRows.length+'）';$('validTab').textContent='校验通过（'+s.validRows.length+'）';
+$('invalidTab').setAttribute('aria-pressed',String(group==='invalid'));$('validTab').setAttribute('aria-pressed',String(group==='valid'));
+$('schema').hidden=!s.headerIssues.length;$('schema').textContent=s.headerIssues.map(e=>'Excel 第 '+e.rowNumber+' 行 · '+e.field+'：'+e.message).join('\n');
+const rows=group==='invalid'?s.invalidRows:s.validRows;
+$('meta').textContent=data.fileName+' · '+s.name+' · '+(group==='invalid'?'待修正':'校验通过')+' '+rows.length+' 行';
+const tr=document.createElement('tr');tr.append(cell('th','Excel 原始行号'));
+for(let i=0;i<s.columnCount;i++)tr.append(cell('th',column(i)+' · '+(s.rows[0]?.cells[i]||'')));
+if(group==='invalid')tr.append(cell('th','错误字段 / 原因'));$('head').replaceChildren(tr);$('body').replaceChildren();
+for(const row of rows.slice(page*size,(page+1)*size)){
+ const tr=document.createElement('tr');tr.append(cell('th',String(row.rowNumber)));
+ for(let i=0;i<s.columnCount;i++){const td=cell('td',row.cells[i]||'');if(row.issues.some(e=>e.columnNumber===i+1))td.classList.add('bad');tr.append(td);}
+ if(group==='invalid'){const td=document.createElement('td');td.className='problems bad';for(const e of row.issues){const line=document.createElement('div');line.textContent=(e.columnNumber?column(e.columnNumber-1)+e.rowNumber+' · ':'')+e.field+'：'+e.message;td.append(line);}tr.append(td);}
+ $('body').append(tr);
+}
+const pages=Math.max(1,Math.ceil(rows.length/size));$('count').textContent=rows.length?'显示第 '+(page*size+1)+'–'+Math.min((page+1)*size,rows.length)+' 条（左侧为 Excel 原始行号）':group==='invalid'?'当前工作表没有待修正的数据行；如有表头错误，请先修正表头。':'当前工作表没有通过校验的数据行。';
+$('page').textContent=(page+1)+' / '+pages;$('prev').disabled=page===0;$('next').disabled=page>=pages-1;
+}
+for(const kind of ['invalid','valid'])$(kind+'Tab').addEventListener('click',()=>{group=kind;page=0;render();});
+$('sheet').addEventListener('change',()=>{page=0;render();});$('prev').addEventListener('click',()=>{page--;render();});$('next').addEventListener('click',()=>{page++;render();});
+$('correct').addEventListener('click',()=>{$('file').value='';$('file').click();});
+$('export').addEventListener('click',async()=>{
+if(!selected||!data||exporting)return;
+const file=selected;exporting=true;$('export').disabled=true;$('error').hidden=true;$('export').textContent='正在生成 Word…';
+const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+try{const form=new FormData();form.append('file',file);const response=await fetch('/api/errors/word',{method:'POST',body:form,signal:controller.signal});
+if(!response.ok){let message='报告导出失败，请重试。';try{message=(await response.json()).message||message;}catch{}throw new Error(message);}
+const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=file.name.replace(/\.xlsx$/i,'')+'-校验错误报告.docx';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+}catch(e){fail(e.name==='AbortError'?'报告生成超时，请稍后重试。':e instanceof TypeError?'无法连接服务器，错误报告未能导出，请重试。':e.message);}
+finally{clearTimeout(timer);exporting=false;$('export').textContent='导出全部错误（Word）';if(data)render();}
+});
+</script></body></html>
