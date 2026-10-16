@@ -23,7 +23,7 @@ class ImportServiceTests {
             var sheet=b.createSheet("名单");var h=sheet.createRow(2);
             for(int i=0;i<SettlementValidator.FIELDS.size();i++)h.createCell(i).setCellValue(SettlementValidator.FIELDS.get(i));
             for(int i=0;i<codes.length;i++){
-                var r=sheet.createRow(4+i*2);String[] values={"供应商"+i,codes[i],"张三","13800138000","1234.567890123456789","2024/2/29","备注"};
+                var r=sheet.createRow(4+i*2);String[] values={"供应商"+i,codes[i],"张三","13800138000","1234.56","2024/2/29","备注"};
                 for(int j=0;j<values.length;j++)r.createCell(j).setCellValue(values[j]);
             }
             b.write(out);return new MockMultipartFile("file","名单.xlsx","",out.toByteArray());
@@ -36,7 +36,7 @@ class ImportServiceTests {
         var result=service.confirm(upload.token(),session);assertEquals(1,count());assertFalse(result.alreadyImported());
         assertTrue(service.confirm(upload.token(),session).alreadyImported());assertEquals(1,count());
         try(var c=DriverManager.getConnection(url,"sa","");var s=c.createStatement();var r=s.executeQuery("SELECT amount,cooperation_date,phone FROM supplier")){
-            r.next();assertEquals("1234.567890123456789",r.getString(1));assertEquals("2024-02-29",r.getString(2));assertEquals("13800138000",r.getString(3));
+            r.next();assertEquals("1234.56",r.getString(1));assertEquals("2024-02-29",r.getString(2));assertEquals("13800138000",r.getString(3));
         }
         var again=service.prepare(file("91310000AB00000001"),new MockHttpSession());assertFalse(again.canConfirm());assertEquals(5,again.validation().issues().getFirst().rowNumber());
     }

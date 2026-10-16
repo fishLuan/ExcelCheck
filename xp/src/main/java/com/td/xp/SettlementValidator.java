@@ -51,6 +51,8 @@ public final class SettlementValidator {
                     if (cell != null && cell.getCellType() == CellType.FORMULA) error = "请将公式转换为实际值后上传，避免使用过期计算结果";
                     else if (value.isEmpty()) error = "必填，不能是空值或纯空格";
                     else if (field.equals("统一社会信用代码") && !value.matches("[0-9A-HJ-NPQRTUWXY]{18}")) error = "必须为18位数字或大写字母，不能包含 I、O、Z、S、V";
+                    else if (databaseChecked && field.equals("供应商名称") && value.codePointCount(0,value.length()) > 255) error = "供应商名称超过数据库允许的255个字符";
+                    else if (databaseChecked && field.equals("联系人") && value.codePointCount(0,value.length()) > 100) error = "联系人超过数据库允许的100个字符";
                     else if (field.equals("手机号")) {
                         String phone = raw(cell, value);
                         if (!phone.matches("1[0-9]{10}")) error = "必须为11位数字，且以1开头";
@@ -58,14 +60,24 @@ public final class SettlementValidator {
                         try {
                             String number = raw(cell, value);
                             if (!number.matches("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)")) throw new NumberFormatException();
-                            if (new BigDecimal(number).signum() < 0) error = "不能为负数";
+                            var amount = new BigDecimal(number);
+                            if (amount.signum() < 0) error = "不能为负数";
+                            else if (databaseChecked) {
+                                if (amount.stripTrailingZeros().scale() > 2) error = "数据库金额列只支持最多2位有效小数，请修正后上传；系统不会自动四舍五入";
+                                else if (amount.compareTo(new BigDecimal("999999999999999999.99")) > 0) error = "金额超过数据库 DECIMAL(20,2) 上限999999999999999999.99";
+                            }
                         } catch (NumberFormatException e) { error = "必须是有效数字（不含货币符号或千分位文字）"; }
-                    } else if (field.equals("合作开始日期") && !validDate(cell, value, book)) error = "必须是真实存在的日期；请使用 Excel 日期或 yyyy-MM-dd、yyyy/M/d、yyyy年M月d日";
+                    } else if (field.equals("合作开始日期") && !validDate(cell, value, book, databaseChecked ? 1000 : 1)) error = databaseChecked ? "必须是真实存在的1000至9999年日期；支持 Excel 日期、yyyy-MM-dd、yyyy/M/d、yyyy年M月d日" : "必须是真实存在的日期；请使用 Excel 日期或 yyyy-MM-dd、yyyy/M/d、yyyy年M月d日";
                     if (error != null) issues.add(new Issue(sheet.getSheetName(), row.getRowNum()+1, col+1, field, error));
                     if (field.equals("统一社会信用代码") && error == null) {
                         codes.computeIfAbsent(value, key -> new ArrayList<>()).add(new Entry(sheet.getSheetName(), row.getRowNum()+1, col+1));
                         if (existingCodes.contains(value)) issues.add(new Issue(sheet.getSheetName(), row.getRowNum()+1, col+1, field, "该供应商已在数据库中，不允许重复入库"));
                     }
+                }
+                if (databaseChecked && columns.containsKey("备注")) {
+                    int col=columns.get("备注");String note=clean(formatter.formatCellValue(row.getCell(col)));
+                    if (note.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 65535)
+                        issues.add(new Issue(sheet.getSheetName(),row.getRowNum()+1,col+1,"备注","备注超过数据库 TEXT 字段65535字节限制"));
                 }
             }
             if (!hasData) issues.add(new Issue(sheet.getSheetName(), header.getRowNum()+1, 0, "数据", "只有表头，没有供应商数据"));
@@ -88,7 +100,7 @@ public final class SettlementValidator {
         }
         return new Result(total, total-badRows.size(), badRows.size(), issues, databaseChecked, List.of(
             databaseChecked ? "已完成数据库查重；确认入库时会再次检查，全部通过才整批写入。" : "尚未连接供应商数据库：仅完成文件内查重，未校验数据库已有供应商；当前不能确认入库。",
-            "“结算金额必须合理”尚无业务阈值：当前检查有效数字及非负，不设置金额上限或小数位限制。"));
+            databaseChecked ? "金额按现有数据库 DECIMAL(20,2) 校验：非负、最多2位有效小数和18位整数，不自动舍入。业务上的合理金额阈值仍待明确。" : "“结算金额必须合理”尚无业务阈值：当前检查有效数字及非负，不设置金额上限或小数位限制。"));
     }
     static String clean(String text) { return text == null ? "" : text.replace('\u00a0',' ').replace('\u3000',' ').strip(); }
     private static boolean nonempty(Row row, DataFormatter formatter) {
@@ -100,16 +112,16 @@ public final class SettlementValidator {
             return BigDecimal.valueOf(cell.getNumericCellValue()).stripTrailingZeros().toPlainString();
         return fallback;
     }
-    private static boolean validDate(Cell cell, String value, Workbook book) {
+    private static boolean validDate(Cell cell, String value, Workbook book, int minYear) {
         if (cell != null && cell.getCellType() == CellType.NUMERIC) {
             double serial = cell.getNumericCellValue();
             boolean date1904 = book instanceof org.apache.poi.xssf.usermodel.XSSFWorkbook x && x.isDate1904();
             if (!DateUtil.isCellDateFormatted(cell) || !DateUtil.isValidExcelDate(serial) || (!date1904 && (int)serial == 60)) return false;
-            try { int year = cell.getLocalDateTimeCellValue().getYear(); return year >= 1 && year <= 9999; }
+            try { int year = cell.getLocalDateTimeCellValue().getYear(); return year >= minYear && year <= 9999; }
             catch (RuntimeException e) { return false; }
         }
         for (String pattern : List.of("uuuu-M-d", "uuuu/M/d", "uuuu年M月d日")) {
-            try { LocalDate date = LocalDate.parse(value, DateTimeFormatter.ofPattern(pattern).withResolverStyle(ResolverStyle.STRICT)); if(date.getYear() >= 1 && date.getYear() <= 9999) return true; }
+            try { LocalDate date = LocalDate.parse(value, DateTimeFormatter.ofPattern(pattern).withResolverStyle(ResolverStyle.STRICT)); if(date.getYear() >= minYear && date.getYear() <= 9999) return true; }
             catch (DateTimeParseException ignored) {}
         }
         return false;

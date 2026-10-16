@@ -109,6 +109,10 @@ public class PreviewController {
 
     @RestControllerAdvice
     public static class Errors {
+        @ExceptionHandler(ImportService.StorageFailure.class)
+        public ResponseEntity<Map<String,String>> unavailable(ImportService.StorageFailure e) {
+            return ResponseEntity.status(503).body(Map.of("message",e.getMessage()));
+        }
         @ExceptionHandler(ImportService.Conflict.class)
         public ResponseEntity<Map<String, Object>> conflict(ImportService.Conflict e) {
             var body = new HashMap<String, Object>(); body.put("message", e.getMessage());

@@ -1,0 +1,94 @@
+from pathlib import Path
+p=Path('src/main/java/com/td/xp/ImportService.java');s=p.read_text(encoding='utf-8-sig')
+s=s.replace('    public static class Conflict extends RuntimeException {','''    public static class StorageFailure extends IllegalStateException {
+        StorageFailure(String message, Throwable cause) {super(message,cause);}
+    }
+    public static class Conflict extends RuntimeException {''')
+s=s.replace('catch(SQLException e) { throw new IllegalStateException("数据库暂时不可用",e); }','''catch(SQLException e) {
+            log.error("读取供应商数据库失败，SQLState={}",e.getSQLState());
+            throw new StorageFailure("数据库暂时不可用，请检查数据库服务或稍后重试；当前未执行导入。",e);
+        }''')
+s=s.replace('throw new IllegalStateException("无法检查文件导入记录，请稍后重试。",e);','throw new StorageFailure("无法读取文件导入记录，请检查数据库连接后重试；当前未执行导入。",e);')
+s=s.replace('log.error("供应商批次入库失败，batchId={}，SQLState={}",token,e.getSQLState());\n                throw new IllegalStateException("入库失败，请重试当前批次确认；系统会防止重复写入。",e);','''log.error("供应商批次入库失败，batchId={}，SQLState={}",token,e.getSQLState());
+                // Other applications may insert without using our named lock; unique indexes remain authoritative.
+                if(e.getSQLState()!=null && e.getSQLState().startsWith("23")) {
+                    try(var check=connect()) {
+                        var same=findFile(check,pending.fileHash());if(same!=null)return same;
+                        var codes=existingCodes(check);
+                        if(pending.rows().stream().anyMatch(row->codes.contains(row.code())))
+                            throw new Conflict("供应商已被其他操作导入，本次已整批回滚，请查看错误并重新上传。",withDatabaseDuplicates(pending.preview(),codes));
+                    } catch(SQLException checkFailure) { e.addSuppressed(checkFailure); }
+                }
+                throw new StorageFailure("数据库入库未能完成。请重试当前批次确认，系统会防止重复写入；如持续失败请联系管理员检查数据库。",e);''')
+s=s.replace('BigDecimal amount=money.getCellType()==CellType.NUMERIC?BigDecimal.valueOf(money.getNumericCellValue()):new BigDecimal(values.get("结算金额"));','''BigDecimal amount=(money.getCellType()==CellType.NUMERIC?BigDecimal.valueOf(money.getNumericCellValue()):new BigDecimal(values.get("结算金额"))).setScale(2,java.math.RoundingMode.UNNECESSARY);''')
+p.write_text(s,encoding='utf-8')
+p=Path('src/main/java/com/td/xp/PreviewController.java');s=p.read_text(encoding='utf-8-sig').replace('        @ExceptionHandler(ImportService.Conflict.class)', '''        @ExceptionHandler(ImportService.StorageFailure.class)
+        public ResponseEntity<Map<String,String>> unavailable(ImportService.StorageFailure e) {
+            return ResponseEntity.status(503).body(Map.of("message",e.getMessage()));
+        }
+        @ExceptionHandler(ImportService.Conflict.class)''');p.write_text(s,encoding='utf-8')
+p=Path('src/main/resources/application.properties');s=p.read_text(encoding='utf-8-sig');lines=[]
+for line in s.splitlines():
+    if line.startswith('spring.datasource.url='): line='spring.datasource.url=${MYSQL_URL:'+line.split('=',1)[1]+'}'
+    elif line.startswith('spring.datasource.username='): line='spring.datasource.username=${MYSQL_USER:'+line.split('=',1)[1]+'}'
+    elif line.startswith('spring.datasource.password='): line='spring.datasource.password=${MYSQL_PASSWORD:'+line.split('=',1)[1]+'}'
+    lines.append(line)
+p.write_text('\n'.join(lines)+'\n',encoding='utf-8')
+p=Path('README.md');p.write_text('''# 供应商结算导入（MySQL版）
+
+## 启动
+
+需要 Java 21、MySQL 8.0.16 及以上。当前使用已建好的 `supplier_settlement` 数据库中的 `supplier` 和 `import_batch` 表，不再使用之前的H2业务数据库。已有H2数据不会自动迁移。
+
+```powershell
+cd D:\\Downloads\\xp\\xp
+.\\mvnw.cmd spring-boot:run
+```
+
+打开 http://localhost:8080 。连接配置在 `src/main/resources/application.properties`，已沿用现有本地连接。可用 `MYSQL_URL`、`MYSQL_USER`、`MYSQL_PASSWORD` 环境变量覆盖。应用使用Hikari连接池，启动仅检查现有表，不建表、不改表、不清空业务数据。新环境可先选择目标库后执行 `db/mysql/schema.sql`。
+
+## 运营流程
+
+1. 上传 `.xlsx`，系统只解析、校验和查重，不写入供应商或成功批次。
+2. 分别查看“待修正”和“校验通过”，支持工作表切换、每页100条。所有行号沿用Excel原始行号，跳过空行后不重新编号。
+3. 有问题时导出全部错误为Word，包含工作表、原始行号、单元格、字段、当前显示值、原因，不受页面筛选或分页影响。在原Excel修改后重新上传。
+4. 整个文件全部通过后点击“确认入库”，核对文件名和总条数，再点击“确认写入数据库”。任一行有错误均禁止整批导入。
+5. 成功后显示批次编号和导入条数。若网络中断或结果不明，重试当前批次确认不会重复写入。
+
+## 校验
+
+每张可见工作表首个非空行为表头，按名称识别列。供应商名称、统一社会信用代码、联系人、手机号、结算金额、合作开始日期必须有对应表头；备注列可省略。必填值不能是空值或纯空白，字段值两端空白忽略。必填字段不接受公式，须先转换为实际值；不执行公式或外部链接。
+
+- 供应商名称：必填，最多255个字符。
+- 统一社会信用代码：18位数字和大写字母，排除I/O/Z/S/V。文件内所有可见工作表间查重，并查询数据库；重复各行均报错。
+- 联系人：必填，最多100个字符。
+- 手机号：1开头的11位数字。
+- 结算金额：校验原始数字，非负。与现有 `DECIMAL(20,2)` 一致，最多18位整数、2位有效小数。多余的零可接受，如1.2300；1.239会报错，绝不自动舍入。金额合理性的业务阈值尚未明确，不另外设置业务上限。
+- 合作开始日期：真实存在的1000至9999年日期，支持Excel日期及 yyyy-M-d、yyyy/M/d、yyyy年M月d日 文本。
+- 备注：选填，UTF-8编码不超过65535字节，与数据库TEXT字段一致。
+
+文件不超过10MB，文件名不超过255个字符；总非空行数（含表头）不超过10000行，每行不超过200列。表头缺失或重复时，该表全部数据行列入待修正。
+
+## 两步导入与去重
+
+待确认数据保存在当前浏览器会话中，30分钟有效；同一会话新上传替换旧预览，服务器重启后未确认批次需重新上传。确认接口只接收token，不接收浏览器回传的供应商字段。目前没有账号登录，批次归属按浏览器会话隔离。
+
+文件采用SHA-256内容指纹判重，改名、换浏览器、重启均不绕过去重。同文件同时确认只产生一个成功批次。重新保存导致文件字节变化时，信用代码唯一约束仍防止重复供应商。
+
+确认使用MySQL数据库级命名锁串行查重与写入（无需额外锁表），事务内再次查重，供应商、成功批次和文件指纹一起提交；失败整批回滚。事务完成后显式释放命名锁，避免连接池复用时占锁。数据库的文件指纹及信用代码唯一约束提供最终保护。金额以BigDecimal写入DECIMAL，日期以LocalDate写入DATE，并保存原文件名。
+
+## 接口
+
+- `POST /api/preview`，multipart字段 `file`：返回分组数据、校验汇总、token、canConfirm、expiresAt、existingFileBatchId。
+- `POST /api/imports/confirm`，JSON `{ "token": "预览返回的token" }`：同一会话下确认整批入库，返回batchId、importedRows、alreadyImported。冲突返回409，包含可定位原始行号的更新错误预览。
+- `POST /api/errors/word`，multipart字段 `file`：重新校验并导出全部错误为 `.docx`，无错误返回可读提示。
+- 数据库运行时故障返回503可读提示，SQL细节与堆栈不会返回页面。
+
+## 验证
+
+`.\\mvnw.cmd test` 执行默认测试，H2仅用于测试且与业务库隔离。
+
+真实MySQL测试 `MySqlIntegrationTests` 仅在设置 `MYSQL_TEST_URL`、`MYSQL_TEST_USER`、`MYSQL_TEST_PASSWORD` 后执行。测试库名必须以 `codex_import_test_` 开头，并预先运行 `db/mysql/schema.sql`；测试会清理此隔离库内的测试数据，禁止指向业务库。覆盖真实MySQL写入、金额日期、同文件并发去重、供应商重复拦截、数据库插入失败回滚及Word导出。
+
+MySQL命名锁文档：https://dev.mysql.com/doc/refman/8.0/en/locking-functions.html
+''',encoding='utf-8')
