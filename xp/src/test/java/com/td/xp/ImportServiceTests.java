@@ -90,4 +90,33 @@ class ImportServiceTests {
         var restarted=new ImportService(disk);var preview=restarted.prepare(file("91310000AB00000001"),new MockHttpSession());
         assertFalse(preview.canConfirm());assertTrue(preview.validation().issues().getFirst().message().contains("数据库"));
     }
+    @Test void identicalFileRenamedOrReuploadedFromAnotherSessionCannotDuplicate() throws Exception {
+        var original=file("91310000AB00000001");var firstSession=new MockHttpSession();
+        var first=service.prepare(original,firstSession);var receipt=service.confirm(first.token(),firstSession);
+        var renamed=new MockMultipartFile("file","改名名单.xlsx","",original.getBytes());var otherSession=new MockHttpSession();
+        var again=service.prepare(renamed,otherSession);
+        assertFalse(again.canConfirm());assertEquals(receipt.batchId(),again.existingFileBatchId());
+        assertTrue(again.validation().notices().stream().anyMatch(n->n.contains("此文件已成功导入")));
+        var retry=service.confirm(again.token(),otherSession);assertTrue(retry.alreadyImported());assertEquals(receipt.batchId(),retry.batchId());assertEquals(1,count());
+        try(var c=DriverManager.getConnection(url,"sa","");var stmt=c.createStatement();var rs=stmt.executeQuery("SELECT COUNT(*) FROM import_batch")){rs.next();assertEquals(1,rs.getInt(1));}
+    }
+    @Test void sameFileConfirmedConcurrentlyCreatesOnlyOneBatch() throws Exception {
+        var original=file("91310000AB00000001","91310000AB00000002");
+        var a=new MockHttpSession();var b=new MockHttpSession();
+        var first=service.prepare(original,a);var second=service.prepare(original,b);
+        try(var executor=Executors.newFixedThreadPool(2)) {
+            var gate=new CountDownLatch(1);
+            var one=executor.submit(()->{gate.await();return service.confirm(first.token(),a);});
+            var two=executor.submit(()->{gate.await();return service.confirm(second.token(),b);});gate.countDown();
+            var r1=one.get(20,TimeUnit.SECONDS);var r2=two.get(20,TimeUnit.SECONDS);
+            assertEquals(r1.batchId(),r2.batchId());assertNotEquals(r1.alreadyImported(),r2.alreadyImported());assertEquals(2,count());
+        }
+    }
+    @Test void fileFingerprintSurvivesRestart(@TempDir Path directory) throws Exception {
+        String disk="jdbc:h2:file:"+directory.resolve("fingerprint").toAbsolutePath().toString().replace('\\','/');
+        var original=file("91310000AB00000001");var first=new ImportService(disk);var session=new MockHttpSession();
+        var preview=first.prepare(original,session);var receipt=first.confirm(preview.token(),session);
+        var restarted=new ImportService(disk);var after=restarted.prepare(original,new MockHttpSession());
+        assertFalse(after.canConfirm());assertEquals(receipt.batchId(),after.existingFileBatchId());
+    }
 }

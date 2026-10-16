@@ -34,8 +34,8 @@ $('notices').replaceChildren(...v.notices.map(t=>cell('p',t)));
 $('export').disabled=confirming||exporting||!v.issues.length;
 $('confirmImport').disabled=confirming||!data.canConfirm||!!receipt;
 $('confirmImport').textContent=confirming?'正在入库…':receipt?'已完成入库':'确认入库（'+v.totalRows+' 条）';
-$('importState').textContent=receipt?'导入成功':data.canConfirm?'待运营确认':'暂不能入库';
-$('importHint').textContent=receipt?'批次 '+receipt.batchId+'，已写入 '+receipt.importedRows+' 条供应商数据。'+(receipt.alreadyImported?'本次为重复确认，未重复写入。':''):data.canConfirm?'已通过字段校验、文件内查重和数据库查重。预览有效期至 '+new Date(data.expiresAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'（北京时间），确认前不会入库。':'请修正所有问题后重新上传并校验；当前文件不会部分导入。';
+$('importState').textContent=receipt?(receipt.alreadyImported?'文件已导入，本次未重复写入':'导入成功'):data.existingFileBatchId?'文件已导入，本次不会重复写入':data.canConfirm?'待运营确认':'暂不能入库';
+$('importHint').textContent=receipt?'批次 '+receipt.batchId+'，已写入 '+receipt.importedRows+' 条供应商数据。'+(receipt.alreadyImported?'该批次或同一文件已成功导入，本次未重复写入。':''):data.canConfirm?'已通过字段校验、文件内查重和数据库查重。预览有效期至 '+new Date(data.expiresAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'（北京时间），确认前不会入库。':'请修正所有问题后重新上传并校验；当前文件不会部分导入。';
 $('invalidTab').textContent='待修正（'+s.invalidRows.length+'）';$('validTab').textContent='校验通过（'+s.validRows.length+'）';
 $('invalidTab').setAttribute('aria-pressed',String(group==='invalid'));$('validTab').setAttribute('aria-pressed',String(group==='valid'));
 $('schema').hidden=!s.headerIssues.length;$('schema').textContent=s.headerIssues.map(e=>'Excel 第 '+e.rowNumber+' 行 · '+e.field+'：'+e.message).join('\n');
@@ -81,7 +81,7 @@ $('submitImport').addEventListener('click',async()=>{
   const response=await fetch('/api/imports/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:data.token}),signal:controller.signal});
   let result;try{result=await response.json();}catch{throw new Error('确认结果暂时无法读取，请使用当前批次重试确认，系统会防止重复入库。');}
   if(!response.ok){if(response.status===409){if(result.preview){data={...result.preview,token:data.token,canConfirm:false};group='invalid';page=0;}else data.canConfirm=false;}throw new Error(result.message||'确认失败，请重试。');}
-  receipt=result;$('status').textContent='导入成功，共 '+result.importedRows+' 条。';
+  receipt=result;$('status').textContent=result.alreadyImported?'该文件已导入，本次未重复写入。':'导入成功，共 '+result.importedRows+' 条。';
  }catch(e){fail(e.name==='AbortError'?'确认等待超时，入库结果暂时不明。请重试当前批次确认，系统会防止重复入库。':e instanceof TypeError?'网络中断，入库结果暂时不明。请重试当前批次确认，系统会防止重复入库。':e.message);}
  finally{clearTimeout(timer);confirming=false;$('file').disabled=false;$('upload').disabled=false;$('correct').disabled=false;render();}
 });

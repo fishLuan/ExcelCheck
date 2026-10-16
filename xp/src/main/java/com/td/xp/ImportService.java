@@ -20,8 +20,8 @@ public class ImportService {
     public record Supplier(String name, String code, String contact, String phone, BigDecimal amount, LocalDate date, String note) {}
     public record Receipt(String batchId, int importedRows, boolean alreadyImported) {}
     public record UploadResult(String fileName, List<PreviewController.SheetData> sheets, SettlementValidator.Result validation,
-                               String token, boolean canConfirm, String expiresAt) {}
-    private record Pending(String token, Instant expires, PreviewController.Preview preview, List<Supplier> rows) {}
+                               String token, boolean canConfirm, String expiresAt, String existingFileBatchId) {}
+    private record Pending(String token, Instant expires, PreviewController.Preview preview, List<Supplier> rows, String fileHash) {}
     public static class Conflict extends RuntimeException {
         final PreviewController.Preview preview;
         Conflict(String message, PreviewController.Preview preview) { super(message); this.preview=preview; }
@@ -34,6 +34,8 @@ public class ImportService {
             s.execute("CREATE TABLE IF NOT EXISTS import_lock (id INT PRIMARY KEY)");
             s.execute("MERGE INTO import_lock KEY(id) VALUES(1)");
             s.execute("CREATE TABLE IF NOT EXISTS import_batch (id VARCHAR(36) PRIMARY KEY, row_count INT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+            s.execute("ALTER TABLE import_batch ADD COLUMN IF NOT EXISTS file_sha256 VARCHAR(64)");
+            s.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_import_batch_file_sha256 ON import_batch(file_sha256)");
             s.execute("CREATE TABLE IF NOT EXISTS supplier (credit_code VARCHAR(18) PRIMARY KEY, supplier_name CLOB NOT NULL, contact CLOB NOT NULL, phone VARCHAR(11) NOT NULL, amount CLOB NOT NULL, cooperation_date DATE NOT NULL, note CLOB, batch_id VARCHAR(36) NOT NULL REFERENCES import_batch(id))");
         }
     }
@@ -51,11 +53,20 @@ public class ImportService {
         synchronized(session) {
             session.removeAttribute("pendingImport");
             var preview=new PreviewController().parse(file,existingCodes(),true);
-            boolean ready=preview.validation().issues().isEmpty() && preview.validation().totalRows()>0;
+            String hash=fileHash(file);
+            Receipt previous;
+            try(var connection=connect()) { previous=findFile(connection,hash); }
+            catch(SQLException e) { throw new IllegalStateException("无法检查文件导入记录，请稍后重试。",e); }
+            if(previous!=null) {
+                var old=preview.validation();var notices=new ArrayList<>(old.notices());
+                notices.add("此文件已成功导入，原批次："+previous.batchId()+"，共"+previous.importedRows()+"条；不会再次写入。修改文件名也不会重复导入。");
+                preview=new PreviewController.Preview(preview.fileName(),preview.sheets(),new SettlementValidator.Result(old.totalRows(),old.validRows(),old.invalidRows(),old.issues(),old.databaseChecked(),notices));
+            }
+            boolean ready=previous==null && preview.validation().issues().isEmpty() && preview.validation().totalRows()>0;
             String token=UUID.randomUUID().toString();Instant expires=clock.instant().plusSeconds(1800);
             var rows=ready?readSuppliers(file,preview):List.<Supplier>of();
-            session.setAttribute("pendingImport",new Pending(token,expires,preview,rows));
-            return new UploadResult(preview.fileName(),preview.sheets(),preview.validation(),token,ready,expires.toString());
+            session.setAttribute("pendingImport",new Pending(token,expires,preview,rows,hash));
+            return new UploadResult(preview.fileName(),preview.sheets(),preview.validation(),token,ready,expires.toString(),previous==null?null:previous.batchId());
         }
     }
     public Receipt confirm(String token, HttpSession session) {
@@ -70,6 +81,8 @@ public class ImportService {
                     try(var s=c.prepareStatement("SELECT row_count FROM import_batch WHERE id=?")){
                         s.setString(1,token);try(var r=s.executeQuery()){if(r.next()){int count=r.getInt(1);c.commit();return new Receipt(token,count,true);}}
                     }
+                    Receipt sameFile=findFile(c,pending.fileHash());
+                    if(sameFile!=null) { c.commit();return sameFile; }
                     if(clock.instant().isAfter(pending.expires())) throw new Conflict("预览已超过30分钟，请重新上传校验。",null);
                     if(!pending.preview().validation().issues().isEmpty() || pending.rows().isEmpty()) throw new Conflict("当前批次仍有校验错误，请修正全部错误后重新上传。",pending.preview());
                     Set<String> existing=existingCodes(c);
@@ -77,7 +90,7 @@ public class ImportService {
                         var refreshed=withDatabaseDuplicates(pending.preview(),existing);
                         throw new Conflict("预览后有供应商已被其他批次导入，本次未写入任何数据。请查看更新后的错误并重新上传。",refreshed);
                     }
-                    try(var b=c.prepareStatement("INSERT INTO import_batch(id,row_count) VALUES(?,?)")) {b.setString(1,token);b.setInt(2,pending.rows().size());b.executeUpdate();}
+                    try(var b=c.prepareStatement("INSERT INTO import_batch(id,row_count,file_sha256) VALUES(?,?,?)")) {b.setString(1,token);b.setInt(2,pending.rows().size());b.setString(3,pending.fileHash());b.executeUpdate();}
                     try(var s=c.prepareStatement("INSERT INTO supplier(credit_code,supplier_name,contact,phone,amount,cooperation_date,note,batch_id) VALUES(?,?,?,?,?,?,?,?)")) {
                         for(var row:pending.rows()) {
                             s.setString(1,row.code());s.setString(2,row.name());s.setString(3,row.contact());s.setString(4,row.phone());
@@ -89,6 +102,20 @@ public class ImportService {
                 } catch(Exception e) {c.rollback();throw e;}
             } catch(Conflict e) {throw e;}
             catch(SQLException e) {throw new IllegalStateException("入库失败，本批次已回滚，请重试确认。",e);}
+        }
+    }
+    private static String fileHash(MultipartFile file) throws IOException {
+        try {
+            var digest=java.security.MessageDigest.getInstance("SHA-256");
+            try(var input=new java.security.DigestInputStream(file.getInputStream(),digest)) {input.transferTo(OutputStream.nullOutputStream());}
+            return HexFormat.of().formatHex(digest.digest());
+        } catch(java.security.NoSuchAlgorithmException e) {throw new IllegalStateException("SHA-256不可用",e);}
+    }
+    private Receipt findFile(Connection c,String hash) throws SQLException {
+        try(var query=c.prepareStatement("SELECT id,row_count FROM import_batch WHERE file_sha256=?")) {
+            query.setString(1,hash);try(var result=query.executeQuery()) {
+                return result.next()?new Receipt(result.getString(1),result.getInt(2),true):null;
+            }
         }
     }
     private PreviewController.Preview withDatabaseDuplicates(PreviewController.Preview p, Set<String> codes) {
